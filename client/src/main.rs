@@ -19,21 +19,31 @@ async fn main() {
 
     // Create tunnel
     let tun = match Tun::new("vpn%d", 1) {
-        Ok(tun) => tun,
+        Ok(tun) => Arc::new(Mutex::new(tun)),
         Err(err) => {
             println!("[ERROR] => {}", err);
             return;
         }
     };
+    let recv_tun = tun.clone();
+    let recv_tun = recv_tun.lock().await;
 
     // Lets make sure we print the real name of our new TUN device.
-    println!("[INFO] => Created TUN '{}'!", tun.name());
+    println!("[INFO] => Created TUN '{}'!", recv_tun.name());
 
     let recv_ws_stream = shared_ws_stream.clone();
+
+    let ws_tun_sender = tun.clone();
     tokio::spawn(async move {
         while let Some(msg) = recv_ws_stream.clone().lock().await.next().await {
             let msg = msg.unwrap();
-            if msg.is_binary() {}
+            if let protocol::Message::Binary(msg_bytes) = msg {
+                // put received ws data into tun
+                let _ = ws_tun_sender
+                    .lock()
+                    .await
+                    .send_via(msg_bytes.len(), &msg_bytes);
+            }
         }
     });
 
@@ -41,10 +51,12 @@ async fn main() {
     let mut buffer: [u8; 1500] = [0x00; 1500];
     let queue = 0;
 
+    let send_ws_stream = shared_ws_stream.clone();
+    let mut send_ws_stream = send_ws_stream.lock().await;
     // Loop forever reading packets off the queue.
     loop {
         // Receive the next packet from the specified queue.
-        let read = match tun.recv_via(queue, &mut buffer) {
+        let read = match recv_tun.recv_via(queue, &mut buffer) {
             Ok(read) => read,
             Err(err) => {
                 println!("[ERROR] => {}", err);
@@ -56,13 +68,7 @@ async fn main() {
 
         // send tun packets to ws server
         let ws_msg = protocol::Message::Binary(buffer[..read].to_vec());
-        shared_ws_stream
-            .clone()
-            .lock()
-            .await
-            .send(ws_msg)
-            .await
-            .unwrap();
+        send_ws_stream.send(ws_msg).await.unwrap();
 
         // Print out the amount of data received and the bytes read off the queue.
         println!("[INFO] => Received packet data ({}B): {:?}", read, packet);
