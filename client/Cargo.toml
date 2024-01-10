@@ -8,4 +8,7 @@ edition = "2021"
 [dependencies]
 tokio.workspace = true
 riptun.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
 etherparse = "0.13"
+url = "2.3.1"
