@@ -7,3 +7,5 @@ edition = "2021"
 
 [dependencies]
 tokio.workspace = true
+riptun.workspace = true
+etherparse = "0.13"
