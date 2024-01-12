@@ -10,7 +10,7 @@ use url::Url;
 #[tokio::main]
 async fn main() {
     // ./client http://10.0.0.2:80/ws
-    let server_ws_addr = env::args().nth(1).unwrap();
+    let server_ws_addr = env::args().nth(1).expect("server address is required");
     let server_ws_url = Url::parse(server_ws_addr.as_str()).unwrap();
 
     // create websocket connection
