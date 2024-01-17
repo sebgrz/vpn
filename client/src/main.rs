@@ -2,7 +2,7 @@ use std::{env, sync::Arc};
 
 use etherparse::SlicedPacket;
 use futures_util::{SinkExt, StreamExt};
-use riptun::Tun;
+use riptun::{Tun, TokioTun};
 use tokio::sync::Mutex;
 use tokio_tungstenite::{connect_async, tungstenite::protocol};
 use url::Url;
@@ -13,50 +13,49 @@ async fn main() {
     let server_ws_addr = env::args().nth(1).expect("server address is required");
     let server_ws_url = Url::parse(server_ws_addr.as_str()).unwrap();
 
+    let queue = 0;
+
     // create websocket connection
     let (ws_stream, _) = connect_async(server_ws_url).await.unwrap();
-    let shared_ws_stream = Arc::new(Mutex::new(ws_stream));
+    let (mut send_ws_stream, mut recv_ws_stream) = ws_stream.split();
 
     // Create tunnel
-    let tun = match Tun::new("vpn%d", 1) {
-        Ok(tun) => Arc::new(Mutex::new(tun)),
+    let tun = match TokioTun::new("vpn%d", 1) {
+        Ok(tun) => Arc::new(tun),
         Err(err) => {
             println!("[ERROR] => {}", err);
             return;
         }
     };
-    let recv_tun = tun.clone();
-    let recv_tun = recv_tun.lock().await;
 
     // Lets make sure we print the real name of our new TUN device.
-    println!("[INFO] => Created TUN '{}'!", recv_tun.name());
-
-    let recv_ws_stream = shared_ws_stream.clone();
-
     let ws_tun_sender = tun.clone();
     tokio::spawn(async move {
-        while let Some(msg) = recv_ws_stream.clone().lock().await.next().await {
+        while let Some(msg) = recv_ws_stream.next().await {
             let msg = msg.unwrap();
             if let protocol::Message::Binary(msg_bytes) = msg {
                 // put received ws data into tun
-                let _ = ws_tun_sender
-                    .lock()
+                let packet = SlicedPacket::from_ip(&msg_bytes).unwrap();
+                println!("[INFO] => Received ws packet data: {:?}", packet);
+                let sent = ws_tun_sender
+                    .send_via(queue, &msg_bytes)
                     .await
-                    .send_via(msg_bytes.len(), &msg_bytes);
+                    .unwrap();
+                println!("[INFO] => sent to vpn tun: {}", sent);
             }
         }
     });
 
     // Create a buffer to read packets into, and setup the queue to receive from.
     let mut buffer: [u8; 1500] = [0x00; 1500];
-    let queue = 0;
+    //let recv_tun = tun.clone();
+    let recv_tun = tun;
+    println!("[INFO] => Created TUN '{}'!", recv_tun.name());
 
-    let send_ws_stream = shared_ws_stream.clone();
-    let mut send_ws_stream = send_ws_stream.lock().await;
     // Loop forever reading packets off the queue.
     loop {
         // Receive the next packet from the specified queue.
-        let read = match recv_tun.recv_via(queue, &mut buffer) {
+        let read = match recv_tun.recv_via(queue, &mut buffer).await {
             Ok(read) => read,
             Err(err) => {
                 println!("[ERROR] => {}", err);
